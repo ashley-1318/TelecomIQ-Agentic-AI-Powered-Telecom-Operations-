@@ -1,0 +1,72 @@
+{
+  "name": "SLA Monitor & Escalation Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "schedule_trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": { "value": "17DwBHcqV9zcRwIuXzB2FZJKjkyGS_pRqV1TP4fN25DQ" },
+        "sheetName": { "value": "Incidents" },
+        "options": {}
+      },
+      "id": "read_sheets",
+      "name": "Read Open Cases",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [200, 0],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "1", "name": "Google Sheets account" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\nconst now = new Date();\nconst warningThreshold = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour from now\n\nfor (const item of $input.all()) {\n  const row = item.json;\n  // Check if Open and SLA_Deadline exists\n  if (row.Status && row.Status.includes('Open') && row.SLA_Deadline) {\n    const deadline = new Date(row.SLA_Deadline);\n    if (deadline < warningThreshold && deadline > now) {\n      row.minutes_left = Math.round((deadline - now) / 60000);\n      results.push({ json: row });\n    }\n  }\n}\nreturn results;"
+      },
+      "id": "code_check_sla",
+      "name": "Check SLA Breach Risk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [400, 0]
+    },
+    {
+      "parameters": {
+        "chatId": "-1003725532032",
+        "text": "=⚠️ **SLA ESCALATION ALERT** ⚠️\n\n**Case ID:** {{$json.CaseID}}\n**Customer:** {{$json.Customer}}\n**Location:** {{$json.Location}}\n\n⏳ **WARNING:** This case breaches its SLA in exactly **{{$json.minutes_left}} minutes**.\n\nEscalating to Tier 4 NOC Duty Manager immediately.",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram_alert",
+      "name": "Telegram (SLA Alert)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [600, 0],
+      "credentials": { "telegramApi": { "id": "1", "name": "Telegram bot" } }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [ [ { "node": "Read Open Cases", "type": "main", "index": 0 } ] ]
+    },
+    "Read Open Cases": {
+      "main": [ [ { "node": "Check SLA Breach Risk", "type": "main", "index": 0 } ] ]
+    },
+    "Check SLA Breach Risk": {
+      "main": [ [ { "node": "Telegram (SLA Alert)", "type": "main", "index": 0 } ] ]
+    }
+  }
+}

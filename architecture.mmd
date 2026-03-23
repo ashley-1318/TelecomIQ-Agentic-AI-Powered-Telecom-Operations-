@@ -1,0 +1,74 @@
+graph TD
+    classDef user fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff;
+    classDef agent fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff;
+    classDef engine fill:#e67e22,stroke:#d35400,stroke-width:2px,color:#fff;
+    classDef db fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff;
+    classDef noc fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff;
+
+    subgraph Input_Layer ["1. Input & Monitoring Layer"]
+        CUST["Customer (Telegram)"]:::user
+        DISTILL["Distill.io (Tower Monitor)"]:::user
+    end
+
+    subgraph Microservices ["2. Python Microservices"]
+        BOT["bot.py (Voice/Vision Processor)"]:::agent
+        SIM["distill_outage_simulator.py"]:::agent
+        RAG["agent_bot.py (NOC RAG Agent)"]:::agent
+    end
+
+    subgraph Orchestration ["3. n8n Master Orchestrator (telecomiq_unified_workflow.json)"]
+        HOOK{"Master Webhook (Port 5678)"}:::engine
+        SWITCH{"Logic Router (Switch Node)"}:::engine
+        
+        GROQ1["Groq AI (Classification & Anger Score)"]:::engine
+        GROQ2["Groq AI (Root Cause & Resolution)"]:::engine
+        SEV_CHK{"High Severity?"}:::engine
+        
+        CRM["Query BSS/CRM Database"]:::engine
+        LOOP["Loop Affected Customers"]:::engine
+        PRO_APOLOGY["Auto-Credit 2GB Data"]:::engine
+        
+        AUTOFIX["Auto-Fix: Reset Hardware Port (REST)"]:::engine
+        VERIFY["Verify: Ping Router (REST)"]:::engine
+    end
+
+    subgraph Database ["4. Database & Logging"]
+        SHEETS[("Google Sheets (Incidents DB)")]:::db
+        LOOKER["Looker Studio (Executive Dashboard)"]:::db
+        SLA_BOT["SLA Escalator (30min Cron)"]:::db
+    end
+
+    subgraph Output_Layer ["5. Tier 3 NOC Engineers"]
+        ENG_GROUP["NOC Engineer Telegram Group"]:::noc
+        CISCO_MANUAL["Mock Cisco Vector DB"]:::noc
+    end
+
+    CUST --> BOT
+    BOT --> HOOK
+    
+    DISTILL --> SIM
+    SIM --> HOOK
+    
+    HOOK --> SWITCH
+    SWITCH -- "Reactive Complaint" --> GROQ1
+    SWITCH -- "Proactive Outage" --> CRM
+
+    CRM --> LOOP
+    LOOP --> PRO_APOLOGY
+    PRO_APOLOGY  --> CUST
+
+    GROQ1 --> GROQ2
+    GROQ2 --> SEV_CHK
+    
+    SEV_CHK -- "Low/Medium" --> SHEETS
+    SEV_CHK -- "High Severity" --> AUTOFIX
+    AUTOFIX --> VERIFY
+    VERIFY --> ENG_GROUP
+    VERIFY --> SHEETS
+
+    SHEETS --> LOOKER
+    SHEETS --> SLA_BOT
+    SLA_BOT --> ENG_GROUP
+    
+    ENG_GROUP --> RAG
+    RAG <--> CISCO_MANUAL

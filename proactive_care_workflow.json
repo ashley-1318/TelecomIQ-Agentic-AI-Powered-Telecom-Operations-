@@ -1,0 +1,80 @@
+{
+  "name": "Proactive Outage Care (Prodapt Capstone)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "outage-alert",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Webhook Trigger (from Distill)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const alert = $input.item.json.body || $input.item.json;\n\n// Simulate an API call to Prodapt CRM / Billing Database\n// In reality, this would be a SQL Query or Google Sheets \"Get Many\" node\nconst affected_customers = [\n  {\n    \"name\": \"Priya Sharma\",\n    // Using the same Chat ID from the customer bot so they receive it on their phone\n    \"telegram_chat_id\": \"{{$json.body.test_chat_id || 'REPLACE_ME'}}\",\n    \"location\": alert.location || \"Chennai-North\",\n    \"plan\": \"Postpaid 5G\"\n  }\n];\n\nreturn { json: { alert, affected_customers, total_affected: 12400 } };"
+      },
+      "id": "2",
+      "name": "Query BSS/CRM Database",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [200, 0]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "affected_customers",
+        "options": {}
+      },
+      "id": "3",
+      "name": "Item Lists (Loop over Customers)",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [400, 0]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "text": "=⚠️ *PROACTIVE NETWORK ALERT* ⚠️\n\nHi {{$json.name}},\n\nOur automated Sentinel system has detected a minor signal degradation at the macro-cell tower servicing your area (`{{$json.location}}`).\n\n🛠️ Our L2 Engineering team has already been dispatched. You do not need to call or text support!\n\n🎁 **Compensation Applied:** To keep you connected, we have auto-credited **2GB of high-speed 5G data** to your mobile plan, completely free of charge.\n\nThank you for choosing us!",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "4",
+      "name": "Telegram (Pre-emptive Apology)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [600, -100],
+      "credentials": { "telegramApi": { "id": "1", "name": "Telegram bot" } }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_ENGINEER_GROUP_CHAT_ID",
+        "text": "=🚨 **AUTO-MITIGATION DEPLOYED** 🚨\n\n**Outage Location:** {{$json.alert.location}}\n**Severity:** {{$json.alert.severity}}\n\n🤖 **Zero-Touch Action Taken:**\n- 12,400 customers in the affected sector have been sent proactive apologies.\n- 2GB data waivers automatically credited to bypass call-center flooding.\n\nExpected L1 Call Deflection: 94%",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "5",
+      "name": "Telegram (Engineer Mitigation Alert)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [600, 100],
+      "credentials": { "telegramApi": { "id": "1", "name": "Telegram bot" } }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger (from Distill)": {
+      "main": [ [ { "node": "Query BSS/CRM Database", "type": "main", "index": 0 } ] ]
+    },
+    "Query BSS/CRM Database": {
+      "main": [ [ { "node": "Item Lists (Loop over Customers)", "type": "main", "index": 0 } ], [ { "node": "Telegram (Engineer Mitigation Alert)", "type": "main", "index": 0 } ] ]
+    },
+    "Item Lists (Loop over Customers)": {
+      "main": [ [ { "node": "Telegram (Pre-emptive Apology)", "type": "main", "index": 0 } ] ]
+    }
+  }
+}

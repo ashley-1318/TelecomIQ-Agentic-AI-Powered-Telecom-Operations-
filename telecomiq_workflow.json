@@ -1,0 +1,512 @@
+{
+  "name": "TelecomIQ Triage Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telecomiq-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body || $input.item.json;\nconst case_id = 'CASE-' + Math.floor(Math.random() * 100000);\n\nconst groqPrompt1 = {\n  model: \"llama-3.3-70b-versatile\",\n  response_format: { type: \"json_object\" },\n  messages: [\n    { role: \"system\", content: \"You are a telecom AI classifier. Output strictly JSON with keys 'type' (e.g. network_degradation, billing), 'severity' (high, medium, low), and 'location'.\" },\n    { role: \"user\", content: body.message || \"Unknown issue\" }\n  ]\n};\n\nreturn { json: { ...body, case_id, timestamp: new Date().toISOString(), groqPrompt1 } };"
+      },
+      "id": "2",
+      "name": "Code (Validate & Assign ID)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "bodyParameters": {
+          "parameters": []
+        },
+        "options": {},
+        "body": "={{ JSON.stringify($json.groqPrompt1) }}"
+      },
+      "id": "3",
+      "name": "HTTP Request (Groq Classify)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const responseObj = $input.item.json;\nlet classification = {};\ntry {\n  classification = JSON.parse(responseObj.choices[0].message.content);\n} catch(e) { classification = {}; }\nreturn { json: { ...$('Code (Validate & Assign ID)').first().json, classification } };"
+      },
+      "id": "4",
+      "name": "Code (Parse)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const current = $input.item.json;\nlet db_history = \"No recent major outages in this sector.\";\nif (current.classification && current.classification.location && current.classification.location.toLowerCase().includes(\"chennai-north\")) {\n  db_history = \"Recent logs show high packet loss at Tower A9 (Chennai-North) due to potential backhaul fiber issue.\";\n}\n\nconst groqPrompt2 = {\n  model: \"llama-3.3-70b-versatile\",\n  response_format: { type: \"json_object\" },\n  messages: [\n    { role: \"system\", content: \"You are an expert telecom network analyst AI. Analyze the complaint subtype and historical DB data. Output strictly JSON with keys 'predicted_root_cause', 'recommended_action', and 'customer_reply' (a polite ETA message).\" },\n    { role: \"user\", content: `Complaint: ${current.message}\\nLocation: ${current.classification.location || \"Unknown\"}\\nHistorical Data: ${db_history}` }\n  ]\n};\n\nreturn { json: { ...current, db_history, groqPrompt2 } };"
+      },
+      "id": "5",
+      "name": "Code (History Lookup)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "bodyParameters": {
+          "parameters": []
+        },
+        "options": {},
+        "body": "={{ JSON.stringify($json.groqPrompt2) }}"
+      },
+      "id": "6",
+      "name": "HTTP Request (Groq Root Cause)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const responseObj = $input.item.json;\nlet analysis = {};\ntry {\n  analysis = JSON.parse(responseObj.choices[0].message.content);\n} catch(e) { analysis = {}; }\nreturn { json: { ...$('Code (History Lookup)').first().json, analysis } };"
+      },
+      "id": "7",
+      "name": "Code (Parse 2)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.classification && $json.classification.severity ? $json.classification.severity.toLowerCase() : '' }}",
+              "match": "equal",
+              "value2": "high"
+            }
+          ]
+        }
+      },
+      "id": "8",
+      "name": "IF (Severity)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "-1003725532032",
+        "text": "=🚨 HIGH SEVERITY ALERT 🚨\nCase ID: {{$json.case_id}}\nCustomer: {{$json.customer_name}}\nLocation: {{$json.classification.location}}\nComplaint: {{$json.message}}\n\n🤖 AI Root Cause Prediction: {{$json.analysis.predicted_root_cause}}\n🛠 Recommended Action: {{$json.analysis.recommended_action}}",
+        "additionalFields": {}
+      },
+      "id": "9",
+      "name": "Telegram (Engineer Alert)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        -100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "1",
+          "name": "Telegram bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Code (Parse 2)').first().json.customer_id }}",
+        "text": "=Hello {{ $('Code (Parse 2)').first().json.customer_name }},\n\n{{ $('Code (Parse 2)').first().json.analysis.customer_reply }}\n\nYour Reference ID is {{ $('Code (Parse 2)').first().json.case_id }}.",
+        "additionalFields": {}
+      },
+      "id": "10",
+      "name": "Telegram (Customer Reply)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "1",
+          "name": "Telegram bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "17DwBHcqV9zcRwIuXzB2FZJKjkyGS_pRqV1TP4fN25DQ"
+        },
+        "sheetName": {
+          "value": "Incidents"
+        },
+        "options": {},
+        "mappingMode": "defineBelow",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "CaseID": "={{ $('Code (Parse 2)').first().json.case_id }}",
+            "Customer": "={{ $('Code (Parse 2)').first().json.customer_name }}",
+            "Location": "={{ $('Code (Parse 2)').first().json.classification.location }}",
+            "Type": "={{ $('Code (Parse 2)').first().json.classification.type }}",
+            "Severity": "={{ $('Code (Parse 2)').first().json.classification.severity }}",
+            "RootCause": "={{ $('Code (Parse 2)').first().json.analysis.predicted_root_cause }}",
+            "Status": "Open",
+            "Timestamp": "={{ $('Code (Parse 2)').first().json.timestamp }}"
+          }
+        }
+      },
+      "id": "11",
+      "name": "Google Sheets (Log)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"case_id\": \"{{ $('Code (Parse 2)').first().json.case_id }}\"\n}",
+        "options": {}
+      },
+      "id": "12",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "outage-alert",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "proactive_node_0",
+      "name": "Webhook Trigger (from Distill)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const alert = $input.item.json.body || $input.item.json;\n\n// Simulate an API call to Prodapt CRM / Billing Database\n// In reality, this would be a SQL Query or Google Sheets \"Get Many\" node\nconst affected_customers = [\n  {\n    \"name\": \"Priya Sharma\",\n    // Using the same Chat ID from the customer bot so they receive it on their phone\n    \"telegram_chat_id\": \"{{$json.body.test_chat_id || 'REPLACE_ME'}}\",\n    \"location\": alert.location || \"Chennai-North\",\n    \"plan\": \"Postpaid 5G\"\n  }\n];\n\nreturn { json: { alert, affected_customers, total_affected: 12400 } };"
+      },
+      "id": "proactive_node_1",
+      "name": "Query BSS/CRM Database",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        200,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "affected_customers",
+        "options": {}
+      },
+      "id": "proactive_node_2",
+      "name": "Item Lists (Loop over Customers)",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [
+        400,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "text": "=⚠️ *PROACTIVE NETWORK ALERT* ⚠️\n\nHi {{$json.name}},\n\nOur automated Sentinel system has detected a minor signal degradation at the macro-cell tower servicing your area (`{{$json.location}}`).\n\n🛠️ Our L2 Engineering team has already been dispatched. You do not need to call or text support!\n\n🎁 **Compensation Applied:** To keep you connected, we have auto-credited **2GB of high-speed 5G data** to your mobile plan, completely free of charge.\n\nThank you for choosing us!",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "proactive_node_3",
+      "name": "Telegram (Pre-emptive Apology)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        600,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "1",
+          "name": "Telegram bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_ENGINEER_GROUP_CHAT_ID",
+        "text": "=🚨 **AUTO-MITIGATION DEPLOYED** 🚨\n\n**Outage Location:** {{$json.alert.location}}\n**Severity:** {{$json.alert.severity}}\n\n🤖 **Zero-Touch Action Taken:**\n- 12,400 customers in the affected sector have been sent proactive apologies.\n- 2GB data waivers automatically credited to bypass call-center flooding.\n\nExpected L1 Call Deflection: 94%",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "proactive_node_4",
+      "name": "Telegram (Engineer Mitigation Alert)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        600,
+        500
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "1",
+          "name": "Telegram bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code (Validate & Assign ID)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code (Validate & Assign ID)": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request (Groq Classify)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request (Groq Classify)": {
+      "main": [
+        [
+          {
+            "node": "Code (Parse)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code (Parse)": {
+      "main": [
+        [
+          {
+            "node": "Code (History Lookup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code (History Lookup)": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request (Groq Root Cause)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request (Groq Root Cause)": {
+      "main": [
+        [
+          {
+            "node": "Code (Parse 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code (Parse 2)": {
+      "main": [
+        [
+          {
+            "node": "IF (Severity)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF (Severity)": {
+      "main": [
+        [
+          {
+            "node": "Telegram (Engineer Alert)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram (Customer Reply)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram (Engineer Alert)": {
+      "main": [
+        [
+          {
+            "node": "Telegram (Customer Reply)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram (Customer Reply)": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets (Log)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets (Log)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger (from Distill)": {
+      "main": [
+        [
+          {
+            "node": "Query BSS/CRM Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query BSS/CRM Database": {
+      "main": [
+        [
+          {
+            "node": "Item Lists (Loop over Customers)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram (Engineer Mitigation Alert)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Item Lists (Loop over Customers)": {
+      "main": [
+        [
+          {
+            "node": "Telegram (Pre-emptive Apology)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

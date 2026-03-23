@@ -1,0 +1,32 @@
+===================================================================
+ERICSSON/CISCO ENTERPRISE EDGE ROUTING MANUAL
+Document Version: 4.1.09
+Classification: INTERNAL NOC USE ONLY
+Applies to: Cisco ASR 9000 Series, Ericsson SSR 8000
+===================================================================
+
+[SECTION 4.2] RECOVERING FROM FATAL BGP PACKET CORRUPTION & BACKHAUL FIBER CUTS
+Symptom: Edge Tower dropping large volumes of traffic. Physical Layer 1 (Fiber) cut detected causing routing loops. BGP neighbors transition to Idle/Active but fail to reach Established state.
+
+Immediate Mitigation Steps for Tier 3 NOC Engineers (Tower A9 overrides):
+
+1. SSH INITIATION
+Access the primary edge router via secure shell on port 22.
+
+2. FLUSH BGP ROUTING TABLE
+A hard flush is required to clear corrupt packets and reset the TCP session for the BGP peers. Do NOT use hard reset in business hours unless traffic loss exceeds 80%.
+> clear ip bgp * soft
+
+3. PORT ISOLATION
+Identify the damaged fiber port (Typically GigabitEthernet0/0/0 for macro-cells). Shut down the port to kill the looping corrupted traffic and force the router to failover to the microwave backup link.
+> conf t
+> int gi0/0/0
+> shut
+> no shut
+
+4. VERIFICATION
+Run a ping test to the overarching core switch to verify 0% packet loss and confirm BGP neighbor adjacency is re-established.
+> do ping 8.8.8.8
+> show ip bgp summary
+
+WARNING: Failure to execute these commands in precise order may result in cascading routing table collapses across the regional subnet.
