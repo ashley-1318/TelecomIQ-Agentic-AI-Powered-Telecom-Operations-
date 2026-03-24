@@ -1,0 +1,446 @@
+{
+  "name": "TelecomIQ Voice Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telecomiq-vapi",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "518352f7-62e4-47bc-9ed7-37289dce4999",
+      "name": "Vapi Tool Call Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        680
+      ],
+      "webhookId": "telecomiq-vapi-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Vapi tool call payload\nconst body = $input.item.json.body || $input.item.json;\n\n// Vapi sends tool calls inside message.toolCallList\nconst message = body.message || {};\nconst toolCallList = message.toolCallList || [];\nconst toolCall = toolCallList[0] || {};\n\n// Extract key fields\nconst toolCallId = toolCall.id || '';\nconst toolName = toolCall.function?.name || '';\nconst toolArgs = toolCall.function?.arguments || {};\n\n// Get the user's spoken text (query)\n// Vapi passes the user message in the transcript or as a tool argument\nconst userQuery = toolArgs.query\n  || toolArgs.message\n  || toolArgs.text\n  || message.transcript\n  || '';\n\n// Session ID from call ID for memory\nconst callId = body.call?.id\n  || message.call?.id\n  || body.callSid\n  || 'default-session';\n\nreturn {\n  json: {\n    toolCallId,\n    toolName,\n    toolArgs,\n    userQuery,\n    callId,\n    rawBody: body\n  }\n};"
+      },
+      "id": "56b5b968-34ec-4c78-bc75-c0ab5729e312",
+      "name": "Extract Vapi Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userQuery }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are TelecomIQ, a professional telecom support agent handling customer calls.\n\nBEHAVIOR RULES:\n- Speak like a polite, professional telecom support agent\n- Keep responses SHORT (1-2 sentences max)\n- Ask ONLY one question at a time\n- Be conversational, not robotic\n- Guide the conversation step-by-step\n\nCLASSIFICATION:\nInternally classify issues into: network_issue, billing_issue, hardware_issue, or other\n\nRESPONSE FORMAT:\nAlways respond with JSON containing:\n- response: Your conversational reply (1-2 sentences)\n- category: Issue classification (network_issue, billing_issue, hardware_issue, other)\n- escalate: true if serious issue (no internet, outage, repeated complaint)\n- resolved: true if issue is resolved or escalated\n\nCONVERSATION FLOW:\n1. If missing information, ask a follow-up question\n2. Once enough info collected, provide solution OR inform about ongoing issue with ETA\n3. If serious issue, mention escalation to engineers\n4. If user frustrated + billing issue, mention refund/credit possibility\n\nEXAMPLES:\nUser: 'My internet is not working'\nResponse: 'I am sorry to hear that. Are you using WiFi or mobile data?'\nCategory: network_issue, Escalate: false, Resolved: false\n\nUser: 'WiFi' -> 'Please check your router. Do you see any red warning lights?'\nUser: 'Yes' -> 'This seems like a network issue in your area. Our team is working on it and it should be resolved within 30 minutes.'\nCategory: network_issue, Escalate: true, Resolved: true",
+          "maxIterations": 3
+        }
+      },
+      "id": "c3d35068-0db7-41c6-bb1a-7f0cbde52387",
+      "name": "TelecomIQ AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        376,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Extract Vapi Payload').item.json.callId }}",
+        "contextWindowLength": 10
+      },
+      "id": "6289a508-6c55-4945-b6d7-e209b5075ad5",
+      "name": "Conversation Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        448,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"response\": \"I am sorry to hear that. Are you using WiFi or mobile data?\",\n  \"category\": \"network_issue\",\n  \"escalate\": false,\n  \"resolved\": false\n}"
+      },
+      "id": "90313c40-ef9f-4d77-b11e-433a0ab86af4",
+      "name": "Response Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        576,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {
+          "maxTokensToSample": 4096,
+          "temperature": 0.3
+        }
+      },
+      "id": "ede643c8-88fd-48a3-ab48-469b69e3a200",
+      "name": "Groq Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        320,
+        800
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "07sV8fttSFEcDtFz",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the Vapi-required response format\n// Vapi REQUIRES: { results: [{ toolCallId, result }] }\n// The toolCallId MUST match exactly what was sent in the tool call\n\nconst toolCallId = $('Extract Vapi Payload').item.json.toolCallId;\nconst agentOutput = $input.item.json.output;\n\n// agentOutput is the parsed structured output from the AI agent\nlet responseText = '';\nlet category = 'other';\nlet escalate = false;\nlet resolved = false;\n\nif (typeof agentOutput === 'object' && agentOutput !== null) {\n  responseText = agentOutput.response || 'I apologize, I could not process your request. Please try again.';\n  category = agentOutput.category || 'other';\n  escalate = agentOutput.escalate || false;\n  resolved = agentOutput.resolved || false;\n} else {\n  responseText = String(agentOutput || 'I apologize, I could not process your request.');\n}\n\n// Result must be a string for Vapi to speak it\nconst resultPayload = JSON.stringify({\n  response: responseText,\n  category: category,\n  escalate: escalate,\n  resolved: resolved\n});\n\nreturn {\n  json: {\n    results: [\n      {\n        toolCallId: toolCallId,\n        result: resultPayload\n      }\n    ],\n    // Also expose fields for downstream logging\n    _meta: {\n      responseText,\n      category,\n      escalate,\n      resolved,\n      callId: $('Extract Vapi Payload').item.json.callId\n    }\n  }\n};"
+      },
+      "id": "143d43cb-4336-42c5-8f30-aed092f1b59c",
+      "name": "Format Vapi Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        784,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ results: $(\"Format Vapi Response\").item.json.results }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "eb5e9b51-7c5e-4f6f-98e0-48b33e69aaa5",
+      "name": "Respond to Vapi",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1456,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telecomiq-vapi-endcall",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "4def9cf2-2dad-45fa-a218-12a9dd2b4c89",
+      "name": "Vapi End-of-Call Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        1008
+      ],
+      "webhookId": "telecomiq-vapi-endcall-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process Vapi end-of-call report\n// Vapi sends this after every call ends with full transcript + summary\n\nconst body = $input.item.json.body || $input.item.json;\nconst message = body.message || {};\n\nconst callId = body.call?.id || message.call?.id || 'unknown';\nconst callDuration = body.call?.endedAt\n  ? Math.round((new Date(body.call.endedAt) - new Date(body.call.startedAt)) / 1000)\n  : 0;\n\nconst transcript = message.transcript || body.transcript || '';\nconst summary = message.summary || body.summary || '';\nconst endedReason = body.call?.endedReason || message.endedReason || 'unknown';\n\n// Collect structured data\nconst recordedAt = new Date().toISOString();\n\nreturn {\n  json: {\n    callId,\n    callDuration,\n    transcript,\n    summary,\n    endedReason,\n    recordedAt,\n    category: 'unknown',\n    escalate: false,\n    resolved: false,\n    rawPayload: body\n  }\n};"
+      },
+      "id": "5fd9157b-c11c-482a-88cb-7c9a19c25654",
+      "name": "Process Call Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        1008
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"received\": true}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "493c49e6-9209-4491-8e38-aa4d9601f12a",
+      "name": "Acknowledge End-of-Call",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        544,
+        1008
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._meta.escalate }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": "",
+              "id": "16573d7f-f747-4d6e-a83e-bcf0d9727858"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "fbf7c5f3-77df-4507-8d54-ae13dafd5f92",
+      "name": "Check Escalation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1008,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "-1003840582938",
+        "text": "=🚨 TelecomIQ NOC Alert 🚨\n\n🆔 Call ID: {{$json._meta.callId}}\n\n📂 Category: {{$json._meta.category.replace(\"_\", \" \").toUpperCase()}}\n\n📍 Issue Summary:\n{{$json.userQuery}}\n\n🤖 AI Response:\n{{$json._meta.responseText}}\n\n⚠️ Status: Escalated to Engineer\n\n⏱ Time: {{$now}}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "f24ef5ea-e2bb-4604-bb77-d300ab1bd941",
+      "name": "Alert Engineers (Telegram)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1232,
+        608
+      ],
+      "webhookId": "94da75e5-4ef0-4a38-8fa9-e5eb25212168",
+      "credentials": {
+        "telegramApi": {
+          "id": "9y2rGwtMPWARpr3C",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1av9DyfQZHvLc6xBWWnw9LIAulXJ5XDcUVLn_jVQqCHk",
+          "mode": "list",
+          "cachedResultName": "TelecomIQ Call Support",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1av9DyfQZHvLc6xBWWnw9LIAulXJ5XDcUVLn_jVQqCHk/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1av9DyfQZHvLc6xBWWnw9LIAulXJ5XDcUVLn_jVQqCHk/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "7e31379c-7de0-45b1-ac19-f7bd87d5281b",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        320,
+        1008
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mt9JNzXdwFuxFmSq",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Vapi Tool Call Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Vapi Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Vapi Payload": {
+      "main": [
+        [
+          {
+            "node": "TelecomIQ AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TelecomIQ AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Format Vapi Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Vapi Response": {
+      "main": [
+        [
+          {
+            "node": "Check Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "TelecomIQ AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversation Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "TelecomIQ AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Response Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "TelecomIQ AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vapi End-of-Call Webhook": {
+      "main": [
+        [
+          {
+            "node": "Process Call Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Call Report": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Escalation": {
+      "main": [
+        [
+          {
+            "node": "Alert Engineers (Telegram)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Engineers (Telegram)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge End-of-Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "a556487e-f010-40a2-b814-a343516bc64b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d4428a00b4a2c25f890f60c5b8dc1859cfc893c40ed8bbbd965943d9ab522234"
+  },
+  "id": "zMYTyS4qrFaur8oL",
+  "tags": []
+}
